@@ -14,6 +14,8 @@ function buildDefaultNotionConfig(overrides = {}) {
 
   return {
     targetId: overrides.targetId || overrides.databaseId || overrides.dataSourceId || "",
+    resolvedTargetId: overrides.resolvedTargetId || "",
+    resolvedTargetKind: overrides.resolvedTargetKind || "",
     titleProperty: overrides.titleProperty || config.notion.defaults.titleProperty,
     priorityProperty: overrides.priorityProperty || config.notion.defaults.priorityProperty,
     statusProperty: overrides.statusProperty || config.notion.defaults.statusProperty,
@@ -120,9 +122,33 @@ export async function updateUserNotionConfig(userId, notionConfig) {
     throw new Error("User not found");
   }
 
+  const existing = user.notion.toObject();
+  const nextTargetId = notionConfig.targetId ?? existing.targetId;
+  const targetChanged = nextTargetId !== existing.targetId;
+
+  user.notion = buildDefaultNotionConfig({
+    ...existing,
+    ...notionConfig,
+    resolvedTargetId: targetChanged ? "" : notionConfig.resolvedTargetId ?? existing.resolvedTargetId,
+    resolvedTargetKind: targetChanged ? "" : notionConfig.resolvedTargetKind ?? existing.resolvedTargetKind
+  });
+
+  await user.save();
+  return user.toObject();
+}
+
+export async function saveResolvedNotionTarget(userId, resolvedTarget) {
+  await connectToDatabase();
+  const user = await User.findById(userId);
+
+  if (!user) {
+    throw new Error("User not found");
+  }
+
   user.notion = buildDefaultNotionConfig({
     ...user.notion.toObject(),
-    ...notionConfig
+    resolvedTargetId: resolvedTarget?.id || "",
+    resolvedTargetKind: resolvedTarget?.kind || ""
   });
 
   await user.save();

@@ -6,6 +6,7 @@ import {
 } from "../services/notionAuthService.js";
 import { withNotionClient } from "../services/notionMcpClient.js";
 import { ensureNotionSchema } from "../services/notionSchemaService.js";
+import { saveResolvedNotionTarget } from "../services/userService.js";
 
 export async function startNotionConnection(req, res, next) {
   try {
@@ -46,13 +47,20 @@ export async function getNotionStatus(req, res, next) {
     if (status.connected && status.notionTarget?.targetId) {
       try {
         const schema = await withNotionClient(req.userId, async (client) =>
-          ensureNotionSchema(client, status.notionTarget.targetId)
+          ensureNotionSchema(client, status.notionTarget.resolvedTargetId || status.notionTarget.targetId)
         );
 
+        await saveResolvedNotionTarget(req.userId, schema.target);
+        status.notionTarget = {
+          ...status.notionTarget,
+          resolvedTargetId: schema.target.id,
+          resolvedTargetKind: schema.target.kind
+        };
         status.schema = {
           properties: schema.properties,
           resolved: schema.resolved,
-          expectedProperties: schema.expectedProperties
+          expectedProperties: schema.expectedProperties,
+          target: schema.target
         };
       } catch (schemaError) {
         status.schema = {

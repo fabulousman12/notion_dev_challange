@@ -1,5 +1,6 @@
 import { withNotionClient } from "./notionMcpClient.js";
 import { ensureNotionSchema } from "./notionSchemaService.js";
+import { saveResolvedNotionTarget } from "./userService.js";
 
 function buildPageContent(task, issue) {
   const subtaskLines = task.subtasks.map((subtask) => `- ${subtask}`).join("\n");
@@ -174,7 +175,8 @@ export async function createNotionTask(user, task, issue) {
       throw new Error("The connected Notion MCP server did not expose notion-create-pages");
     }
 
-    const schema = await ensureNotionSchema(client, user.notion.targetId);
+    const schema = await ensureNotionSchema(client, user.notion.resolvedTargetId || user.notion.targetId);
+    await saveResolvedNotionTarget(String(user.id || user._id), schema.target);
     const pagePayload = buildPagePayload(task, issue, schema.resolved);
     const result = await client.callTool({
       name: createTool.name,
