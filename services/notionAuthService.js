@@ -35,7 +35,7 @@ function normalizeExpiry(tokens) {
 }
 
 function hasNotionTargetConfig(user) {
-  return Boolean(user?.notion?.targetId);
+  return Boolean(user?.notion?.databaseName || user?.notion?.targetId || user?.notion?.resolvedTargetId);
 }
 
 export async function beginNotionOAuthFlow(userId) {

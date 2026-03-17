@@ -5,7 +5,7 @@ import {
   getNotionConnectionStatus
 } from "../services/notionAuthService.js";
 import { withNotionClient } from "../services/notionMcpClient.js";
-import { ensureNotionSchema } from "../services/notionSchemaService.js";
+import { ensureNotionWorkspace } from "../services/notionSchemaService.js";
 import { saveResolvedNotionTarget } from "../services/userService.js";
 
 export async function startNotionConnection(req, res, next) {
@@ -44,23 +44,37 @@ export async function getNotionStatus(req, res, next) {
   try {
     const status = await getNotionConnectionStatus(req.userId);
 
-    if (status.connected && status.notionTarget?.targetId) {
+    if (status.connected) {
       try {
-        const schema = await withNotionClient(req.userId, async (client) =>
-          ensureNotionSchema(client, status.notionTarget.resolvedTargetId || status.notionTarget.targetId)
+        const workspace = await withNotionClient(req.userId, async (client) =>
+          ensureNotionWorkspace(client, {
+            id: req.userId,
+            ...req.user,
+            notion: status.notionTarget || req.user?.notion || {}
+          })
         );
 
-        await saveResolvedNotionTarget(req.userId, schema.target);
+        await saveResolvedNotionTarget(req.userId, {
+          databaseName: workspace.databaseName,
+          targetId: workspace.createdDatabase?.targetId || status.notionTarget?.targetId || workspace.target.id,
+          resolvedTargetId: workspace.target.id,
+          resolvedTargetKind: workspace.target.kind,
+          target: workspace.target
+        });
+
         status.notionTarget = {
-          ...status.notionTarget,
-          resolvedTargetId: schema.target.id,
-          resolvedTargetKind: schema.target.kind
+          ...(status.notionTarget || {}),
+          databaseName: workspace.databaseName,
+          targetId: workspace.createdDatabase?.targetId || status.notionTarget?.targetId || workspace.target.id,
+          resolvedTargetId: workspace.target.id,
+          resolvedTargetKind: workspace.target.kind
         };
         status.schema = {
-          properties: schema.properties,
-          resolved: schema.resolved,
-          expectedProperties: schema.expectedProperties,
-          target: schema.target
+          properties: workspace.properties,
+          resolved: workspace.resolved,
+          expectedProperties: workspace.expectedProperties,
+          target: workspace.target,
+          createdDatabase: workspace.createdDatabase || null
         };
       } catch (schemaError) {
         status.schema = {

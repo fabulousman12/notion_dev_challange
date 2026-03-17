@@ -1,5 +1,5 @@
 import { withNotionClient } from "./notionMcpClient.js";
-import { ensureNotionSchema } from "./notionSchemaService.js";
+import { ensureNotionWorkspace } from "./notionSchemaService.js";
 import { saveResolvedNotionTarget } from "./userService.js";
 
 function buildPageContent(task, issue) {
@@ -16,15 +16,15 @@ function buildPageContent(task, issue) {
   ].join("\n");
 }
 
-function buildParentObject(schema) {
-  if (schema.target.kind === "data_source_id") {
+function buildParentObject(workspace) {
+  if (workspace.target.kind === "data_source_id") {
     return {
-      data_source_id: schema.target.id
+      data_source_id: workspace.target.id
     };
   }
 
   return {
-    database_id: schema.target.id
+    database_id: workspace.target.id
   };
 }
 
@@ -41,12 +41,12 @@ function buildPagePayload(task, issue, resolvedSchema) {
   };
 }
 
-function buildCreateToolArguments(tool, pagePayload, schema) {
+function buildCreateToolArguments(tool, pagePayload, workspace) {
   const properties = tool?.inputSchema?.properties || {};
   const args = {};
 
   if (properties.parent) {
-    args.parent = buildParentObject(schema);
+    args.parent = buildParentObject(workspace);
   }
 
   if (properties.pages) {
@@ -156,17 +156,6 @@ function parseCreatePageResult(result) {
 }
 
 export async function createNotionTask(user, task, issue) {
-  const hasTarget = Boolean(user.notion.targetId);
-
-  if (!hasTarget) {
-    return {
-      id: `mock-${issue.id || Date.now()}`,
-      url: `https://notion.so/mock-${issue.number || "task"}`,
-      mode: "mock",
-      toolUsed: "mock-notion-create-pages"
-    };
-  }
-
   return withNotionClient(String(user.id || user._id), async (client) => {
     const toolList = await client.listTools();
     const createTool = toolList.tools.find((tool) => tool.name === "notion-create-pages");
@@ -175,12 +164,19 @@ export async function createNotionTask(user, task, issue) {
       throw new Error("The connected Notion MCP server did not expose notion-create-pages");
     }
 
-    const schema = await ensureNotionSchema(client, user.notion.resolvedTargetId || user.notion.targetId);
-    await saveResolvedNotionTarget(String(user.id || user._id), schema.target);
-    const pagePayload = buildPagePayload(task, issue, schema.resolved);
+    const workspace = await ensureNotionWorkspace(client, user);
+    await saveResolvedNotionTarget(String(user.id || user._id), {
+      databaseName: workspace.databaseName,
+      targetId: workspace.createdDatabase?.targetId || user?.notion?.targetId || workspace.target.id,
+      resolvedTargetId: workspace.target.id,
+      resolvedTargetKind: workspace.target.kind,
+      target: workspace.target
+    });
+
+    const pagePayload = buildPagePayload(task, issue, workspace.resolved);
     const result = await client.callTool({
       name: createTool.name,
-      arguments: buildCreateToolArguments(createTool, pagePayload, schema)
+      arguments: buildCreateToolArguments(createTool, pagePayload, workspace)
     });
 
     return parseCreatePageResult(result);

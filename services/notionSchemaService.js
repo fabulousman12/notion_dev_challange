@@ -17,6 +17,11 @@ const REQUIRED_NOTION_PROPERTIES = {
   }
 };
 
+const DEFAULT_EXPECTED_PROPERTIES = [
+  "Title",
+  ...Object.values(REQUIRED_NOTION_PROPERTIES).map((definition) => definition.name)
+];
+
 function extractTextBlocks(result) {
   return (result.content || [])
     .filter((item) => item.type === "text")
@@ -30,6 +35,14 @@ function normalizeType(value) {
   }
 
   return String(value).toLowerCase();
+}
+
+function normalizeId(id) {
+  return String(id || "").trim();
+}
+
+function stripCollectionPrefix(id) {
+  return normalizeId(id).replace(/^collection:\/\//i, "");
 }
 
 function looksLikePropertyObject(value) {
@@ -175,15 +188,11 @@ async function callOptionalTool(client, toolName, args) {
 }
 
 function extractCollectionIds(text) {
-  return Array.from(text.matchAll(/collection:\/\/([0-9a-f-]{32,36})/gi)).map((match) => match[1]);
+  return Array.from(text.matchAll(/collection:\/\/([0-9a-f-]{32,36})/gi)).map((match) => stripCollectionPrefix(match[1]));
 }
 
-function normalizeId(id) {
-  return String(id || "").trim();
-}
-
-function stripCollectionPrefix(id) {
-  return normalizeId(id).replace(/^collection:\/\//i, "");
+function extractDatabaseIds(text) {
+  return Array.from(text.matchAll(/(?<!collection:\/\/)([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f-]{27})/gi)).map((match) => normalizeId(match[1]));
 }
 
 function buildTargetVariants(targetId, text) {
@@ -268,12 +277,119 @@ export async function resolveNotionTarget(client, targetId) {
   };
 }
 
-export async function inspectNotionSchema(client, targetId) {
-  return resolveNotionTarget(client, targetId);
+function buildCreateDatabaseSchema() {
+  return `CREATE TABLE ("Task" TITLE, "Priority" SELECT('High':red, 'Medium':yellow, 'Normal':blue, 'Low':gray), "Status" SELECT('Open':gray, 'In Progress':blue, 'Done':green, 'Blocked':red), "Subtasks" RICH_TEXT, "Source" URL)`;
 }
 
-export async function ensureNotionSchema(client, targetId) {
-  let inspection = await resolveNotionTarget(client, targetId);
+function buildDefaultDatabaseName(user) {
+  return user?.notion?.databaseName || `${user?.name || "User"} AI Developer Tasks`;
+}
+
+function parseCreatedDatabaseTarget(result, databaseName) {
+  const text = extractTextBlocks(result);
+  const collectionId = extractCollectionIds(text)[0] || "";
+  const databaseId = extractDatabaseIds(text)[0] || "";
+
+  return {
+    databaseName,
+    targetId: databaseId || collectionId,
+    resolvedTargetId: collectionId || databaseId,
+    resolvedTargetKind: collectionId ? "data_source_id" : "database_id",
+    rawText: text
+  };
+}
+
+export async function createNotionTaskDatabase(client, user) {
+  const databaseName = buildDefaultDatabaseName(user);
+  const result = await callOptionalTool(client, "notion-create-database", {
+    title: databaseName,
+    schema: buildCreateDatabaseSchema()
+  });
+
+  if (!result) {
+    throw new Error("The connected Notion MCP server did not expose notion-create-database");
+  }
+
+  return parseCreatedDatabaseTarget(result, databaseName);
+}
+
+async function findExistingDatabaseTarget(client, databaseName) {
+  const result = await callOptionalTool(client, "notion-search", {
+    query: databaseName,
+    query_type: "internal",
+    page_size: 10,
+    max_highlight_length: 0
+  });
+
+  if (!result) {
+    return null;
+  }
+
+  const text = extractTextBlocks(result);
+  const seen = new Set();
+  const candidateIds = [
+    ...extractCollectionIds(text).map((id) => ({ id, kind: "data_source_id" })),
+    ...extractDatabaseIds(text).map((id) => ({ id, kind: "database_id" }))
+  ].filter((candidate) => {
+    const key = `${candidate.kind}:${candidate.id}`;
+
+    if (!candidate.id || seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+
+  for (const candidate of candidateIds) {
+    const inspection = await resolveNotionTarget(
+      client,
+      candidate.kind === "data_source_id" ? `collection://${candidate.id}` : candidate.id
+    );
+
+    if (findByType(inspection.properties, "title")) {
+      return {
+        ...inspection,
+        databaseName,
+        expectedProperties: DEFAULT_EXPECTED_PROPERTIES
+      };
+    }
+  }
+
+  return null;
+}
+
+export async function ensureNotionWorkspace(client, user) {
+  const configuredTarget = user?.notion?.resolvedTargetId || user?.notion?.targetId;
+
+  if (!configuredTarget) {
+    const existing = await findExistingDatabaseTarget(client, buildDefaultDatabaseName(user));
+
+    if (existing) {
+      return existing;
+    }
+
+    const created = await createNotionTaskDatabase(client, user);
+    const inspection = await resolveNotionTarget(client, created.resolvedTargetId || created.targetId);
+
+    return {
+      ...inspection,
+      databaseName: created.databaseName,
+      expectedProperties: DEFAULT_EXPECTED_PROPERTIES,
+      target: {
+        id: created.resolvedTargetId || created.targetId,
+        kind: created.resolvedTargetKind,
+        raw: created.resolvedTargetId || created.targetId,
+        fetchId:
+          created.resolvedTargetKind === "data_source_id"
+            ? `collection://${created.resolvedTargetId}`
+            : created.targetId
+      },
+      createdDatabase: created
+    };
+  }
+
+  let inspection = await resolveNotionTarget(client, configuredTarget);
   const statements = buildMissingStatements(inspection.properties);
 
   if (statements.length > 0 && inspection.target.kind === "data_source_id") {
@@ -289,6 +405,8 @@ export async function ensureNotionSchema(client, targetId) {
 
   return {
     ...inspection,
-    expectedProperties: ["Title", ...Object.values(REQUIRED_NOTION_PROPERTIES).map((definition) => definition.name)]
+    databaseName: buildDefaultDatabaseName(user),
+    expectedProperties: DEFAULT_EXPECTED_PROPERTIES,
+    createdDatabase: null
   };
 }

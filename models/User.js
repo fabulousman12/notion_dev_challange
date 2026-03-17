@@ -2,15 +2,10 @@ import mongoose from "mongoose";
 
 const notionConfigSchema = new mongoose.Schema(
   {
+    databaseName: { type: String, default: "" },
     targetId: { type: String, default: "" },
     resolvedTargetId: { type: String, default: "" },
-    resolvedTargetKind: { type: String, default: "" },
-    titleProperty: { type: String, default: "Task" },
-    priorityProperty: { type: String, default: "Priority" },
-    statusProperty: { type: String, default: "Status" },
-    statusValue: { type: String, default: "Open" },
-    subtasksProperty: { type: String, default: "Subtasks" },
-    sourceProperty: { type: String, default: "Source" }
+    resolvedTargetKind: { type: String, default: "" }
   },
   { _id: false }
 );

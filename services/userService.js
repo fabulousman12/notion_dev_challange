@@ -7,21 +7,19 @@ import {
   sanitizeUser,
   verifyPassword
 } from "./authService.js";
-import { getAppConfig } from "../config/appConfig.js";
 
-function buildDefaultNotionConfig(overrides = {}) {
-  const config = getAppConfig();
+function buildDefaultDatabaseName(nameOrEmail = "User") {
+  return `${nameOrEmail} AI Developer Tasks`;
+}
+
+function buildDefaultNotionConfig(overrides = {}, fallbackNameOrEmail = "User") {
+  const baseName = String(fallbackNameOrEmail || "User").trim() || "User";
 
   return {
+    databaseName: overrides.databaseName || buildDefaultDatabaseName(baseName),
     targetId: overrides.targetId || overrides.databaseId || overrides.dataSourceId || "",
     resolvedTargetId: overrides.resolvedTargetId || "",
-    resolvedTargetKind: overrides.resolvedTargetKind || "",
-    titleProperty: overrides.titleProperty || config.notion.defaults.titleProperty,
-    priorityProperty: overrides.priorityProperty || config.notion.defaults.priorityProperty,
-    statusProperty: overrides.statusProperty || config.notion.defaults.statusProperty,
-    statusValue: overrides.statusValue || config.notion.defaults.statusValue,
-    subtasksProperty: overrides.subtasksProperty || config.notion.defaults.subtasksProperty,
-    sourceProperty: overrides.sourceProperty || config.notion.defaults.sourceProperty
+    resolvedTargetKind: overrides.resolvedTargetKind || ""
   };
 }
 
@@ -86,15 +84,16 @@ export async function createUser({ name, email, password, notion = {} }) {
     throw new Error("A user with that email already exists");
   }
 
+  const displayName = name?.trim() || normalizedEmail.split("@")[0];
   const { salt, passwordHash } = hashPassword(password);
   const createdUser = await User.create({
-    name: name?.trim() || normalizedEmail.split("@")[0],
+    name: displayName,
     email: normalizedEmail,
     salt,
     passwordHash,
     webhookKey: generateWebhookKey(),
     webhookSecret: generateWebhookSecret(),
-    notion: buildDefaultNotionConfig(notion)
+    notion: buildDefaultNotionConfig(notion, displayName)
   });
 
   return createdUser.toObject();
@@ -123,21 +122,32 @@ export async function updateUserNotionConfig(userId, notionConfig) {
   }
 
   const existing = user.notion.toObject();
+  const nextDatabaseName = String(
+    notionConfig.databaseName ?? existing.databaseName ?? buildDefaultDatabaseName(user.name)
+  ).trim();
   const nextTargetId = notionConfig.targetId ?? existing.targetId;
+  const databaseChanged = nextDatabaseName !== existing.databaseName;
   const targetChanged = nextTargetId !== existing.targetId;
 
-  user.notion = buildDefaultNotionConfig({
-    ...existing,
-    ...notionConfig,
-    resolvedTargetId: targetChanged ? "" : notionConfig.resolvedTargetId ?? existing.resolvedTargetId,
-    resolvedTargetKind: targetChanged ? "" : notionConfig.resolvedTargetKind ?? existing.resolvedTargetKind
-  });
+  user.notion = buildDefaultNotionConfig(
+    {
+      ...existing,
+      ...notionConfig,
+      databaseName: nextDatabaseName,
+      targetId: nextTargetId,
+      resolvedTargetId:
+        databaseChanged || targetChanged ? "" : notionConfig.resolvedTargetId ?? existing.resolvedTargetId,
+      resolvedTargetKind:
+        databaseChanged || targetChanged ? "" : notionConfig.resolvedTargetKind ?? existing.resolvedTargetKind
+    },
+    user.name
+  );
 
   await user.save();
   return user.toObject();
 }
 
-export async function saveResolvedNotionTarget(userId, resolvedTarget) {
+export async function saveResolvedNotionTarget(userId, notionState = {}) {
   await connectToDatabase();
   const user = await User.findById(userId);
 
@@ -145,11 +155,19 @@ export async function saveResolvedNotionTarget(userId, resolvedTarget) {
     throw new Error("User not found");
   }
 
-  user.notion = buildDefaultNotionConfig({
-    ...user.notion.toObject(),
-    resolvedTargetId: resolvedTarget?.id || "",
-    resolvedTargetKind: resolvedTarget?.kind || ""
-  });
+  const existing = user.notion.toObject();
+  const target = notionState.target || {};
+
+  user.notion = buildDefaultNotionConfig(
+    {
+      ...existing,
+      databaseName: notionState.databaseName || existing.databaseName,
+      targetId: notionState.targetId || existing.targetId || target.id || "",
+      resolvedTargetId: notionState.resolvedTargetId || target.id || existing.resolvedTargetId,
+      resolvedTargetKind: notionState.resolvedTargetKind || target.kind || existing.resolvedTargetKind
+    },
+    user.name
+  );
 
   await user.save();
   return user.toObject();
@@ -169,4 +187,4 @@ export async function rotateUserWebhookKey(userId) {
   return user.toObject();
 }
 
-export { sanitizeUser };
+export { buildDefaultDatabaseName, sanitizeUser };
