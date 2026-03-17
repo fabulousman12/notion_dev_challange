@@ -1,97 +1,54 @@
 import { withNotionClient } from "./notionMcpClient.js";
 
-function buildParentObject(user) {
-  return {
-    database_id: user.notion.targetId
-  };
+function buildPageContent(task, issue) {
+  const subtaskLines = task.subtasks.map((subtask) => `- ${subtask}`).join("\n");
+
+  return [
+    "## AI Issue Breakdown",
+    `Suggested role: ${task.suggestedRole}`,
+    `Repository: ${issue.repository}`,
+    `Issue: #${issue.number}`,
+    "",
+    "## Suggested Subtasks",
+    subtaskLines
+  ].join("\n");
 }
 
 function buildPagePayload(task, issue, user) {
   return {
-    parent: buildParentObject(user),
     properties: {
-      [user.notion.titleProperty]: {
-        title: [
-          {
-            text: {
-              content: task.task
-            }
-          }
-        ]
-      },
-      [user.notion.priorityProperty]: {
-        select: {
-          name: task.priority
-        }
-      },
-      [user.notion.statusProperty]: {
-        select: {
-          name: user.notion.statusValue
-        }
-      },
-      [user.notion.subtasksProperty]: {
-        rich_text: [
-          {
-            text: {
-              content: task.subtasks.join(" | ")
-            }
-          }
-        ]
-      },
-      [user.notion.sourceProperty]: {
-        url: issue.url
-      }
+      [user.notion.titleProperty]: task.task,
+      [user.notion.priorityProperty]: task.priority,
+      [user.notion.statusProperty]: user.notion.statusValue,
+      [user.notion.subtasksProperty]: task.subtasks.join(" | "),
+      [user.notion.sourceProperty]: issue.url
     },
-    children: [
-      {
-        object: "block",
-        type: "heading_2",
-        heading_2: {
-          rich_text: [{ type: "text", text: { content: "AI Issue Breakdown" } }]
-        }
-      },
-      {
-        object: "block",
-        type: "paragraph",
-        paragraph: {
-          rich_text: [{ type: "text", text: { content: `Suggested role: ${task.suggestedRole}` } }]
-        }
-      },
-      {
-        object: "block",
-        type: "paragraph",
-        paragraph: {
-          rich_text: [
-            {
-              type: "text",
-              text: { content: `Repository: ${issue.repository} | Issue #${issue.number}` }
-            }
-          ]
-        }
-      },
-      ...task.subtasks.map((subtask) => ({
-        object: "block",
-        type: "bulleted_list_item",
-        bulleted_list_item: {
-          rich_text: [{ type: "text", text: { content: subtask } }]
-        }
-      }))
-    ]
+    content: buildPageContent(task, issue)
   };
 }
 
-function buildCreateToolArguments(tool, pagePayload) {
+function buildCreateToolArguments(tool, pagePayload, user) {
   const properties = tool?.inputSchema?.properties || {};
+  const args = {};
+
+  if (properties.parent) {
+    args.parent = user.notion.targetId;
+  }
 
   if (properties.pages) {
-    return { pages: [pagePayload] };
+    args.pages = [pagePayload];
+    return args;
   }
 
   if (properties.page) {
-    return { page: pagePayload };
+    args.page = pagePayload;
+    return args;
   }
 
-  return pagePayload;
+  return {
+    ...args,
+    ...pagePayload
+  };
 }
 
 function extractFromStructuredContent(value) {
@@ -101,6 +58,10 @@ function extractFromStructuredContent(value) {
 
   if (typeof value.url === "string") {
     return { url: value.url, id: value.id || value.pageId || null };
+  }
+
+  if (typeof value.id === "string") {
+    return { url: value.url || "", id: value.id };
   }
 
   if (Array.isArray(value.results) && value.results[0]) {
@@ -121,14 +82,36 @@ function extractTextBlocks(result) {
     .join("\n");
 }
 
+function normalizeNotionUrl(url, id) {
+  if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+    return url;
+  }
+
+  const rawId = typeof id === "string" ? id.trim() : "";
+  const compactId = rawId.replace(/-/g, "");
+
+  if (/^[a-f0-9]{32}$/i.test(compactId)) {
+    return `https://www.notion.so/${compactId}`;
+  }
+
+  return "";
+}
+
 function parseCreatePageResult(result) {
-  const structured = extractFromStructuredContent(result.structuredContent);
   const text = extractTextBlocks(result);
+
+  if (/^MCP error/i.test(text)) {
+    throw new Error(text);
+  }
+
+  const structured = extractFromStructuredContent(result.structuredContent);
   const urlMatch = text.match(/https?:\/\/[^\s]+/);
+  const pageId = structured?.id || `mcp-${Date.now()}`;
+  const pageUrl = normalizeNotionUrl(structured?.url || urlMatch?.[0] || "", pageId);
 
   return {
-    id: structured?.id || `mcp-${Date.now()}`,
-    url: structured?.url || urlMatch?.[0] || "",
+    id: pageId,
+    url: pageUrl,
     mode: "live",
     toolUsed: "notion-create-pages",
     rawText: text
@@ -147,7 +130,7 @@ export async function createNotionTask(user, task, issue) {
     };
   }
 
-  return withNotionClient(user.id, async (client) => {
+  return withNotionClient(String(user.id || user._id), async (client) => {
     const toolList = await client.listTools();
     const createTool = toolList.tools.find((tool) => tool.name === "notion-create-pages");
 
@@ -158,7 +141,7 @@ export async function createNotionTask(user, task, issue) {
     const pagePayload = buildPagePayload(task, issue, user);
     const result = await client.callTool({
       name: createTool.name,
-      arguments: buildCreateToolArguments(createTool, pagePayload)
+      arguments: buildCreateToolArguments(createTool, pagePayload, user)
     });
 
     return parseCreatePageResult(result);

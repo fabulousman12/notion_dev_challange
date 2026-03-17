@@ -87,7 +87,8 @@ app.get("/api/health", async (_req, res, next) => {
     res.json({
       status: "ok",
       version: config.appVersion,
-      aiMode: config.openAiApiKey ? "live" : "fallback",
+      aiMode: config.geminiApiKey ? "live" : "fallback",
+      aiProvider: config.geminiApiKey ? "gemini" : "fallback",
       mcpServer: config.notion.mcpServerUrl,
       users: users.length,
       totalWorkflows: workflows.length,

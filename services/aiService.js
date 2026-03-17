@@ -1,9 +1,8 @@
-import OpenAI from "openai";
+import { getAppConfig } from "../config/appConfig.js";
 
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
-const model = process.env.OPENAI_MODEL || "gpt-5.1";
+const config = getAppConfig();
+const geminiApiKey = config.geminiApiKey;
+const model = config.geminiModel;
 
 function safeParseJson(content) {
   const cleaned = content.replace(/```json|```/g, "").trim();
@@ -57,43 +56,64 @@ function normalizeResult(result, issue) {
   };
 }
 
+function extractGeminiText(data) {
+  const candidate = data?.candidates?.[0];
+  const parts = candidate?.content?.parts || [];
+
+  return parts
+    .map((part) => (typeof part.text === "string" ? part.text : ""))
+    .join("\n")
+    .trim();
+}
+
+async function requestGeminiAnalysis(issue) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiApiKey)}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      system_instruction: {
+        parts: [
+          {
+            text: "You convert GitHub issues into structured developer tasks. Return only valid JSON with keys task, priority, suggestedRole, and subtasks."
+          }
+        ]
+      },
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `Issue title: ${issue.title}\nIssue body: ${issue.body || "No body provided"}\nRepository: ${issue.repository}\n\nReturn JSON in this format:\n{\n  \"task\": \"string\",\n  \"priority\": \"High | Medium | Normal | Low\",\n  \"suggestedRole\": \"Backend Engineer | Frontend Engineer | Full-Stack Engineer | QA Engineer | DevOps Engineer | Product Engineer\",\n  \"subtasks\": [\"string\"]\n}`
+            }
+          ]
+        }
+      ],
+      generationConfig: {
+        responseMimeType: "application/json"
+      }
+    })
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `Gemini request failed with status ${response.status}`);
+  }
+
+  const content = extractGeminiText(data) || "{}";
+  return safeParseJson(content);
+}
+
 export async function analyzeIssue(issue) {
-  if (!openai) {
+  if (!geminiApiKey) {
     return normalizeResult(buildFallbackTask(issue), issue);
   }
 
   try {
-    const response = await openai.chat.completions.create({
-      model,
-      response_format: {
-        type: "json_object"
-      },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You convert GitHub issues into structured developer tasks. Return only valid JSON with keys task, priority, suggestedRole, and subtasks."
-        },
-        {
-          role: "user",
-          content: `Issue title: ${issue.title}
-Issue body: ${issue.body || "No body provided"}
-Repository: ${issue.repository}
-
-Return JSON in this format:
-{
-  "task": "string",
-  "priority": "High | Medium | Normal | Low",
-  "suggestedRole": "Backend Engineer | Frontend Engineer | Full-Stack Engineer | QA Engineer | DevOps Engineer | Product Engineer",
-  "subtasks": ["string"]
-}`
-        }
-      ]
-    });
-
-    const content = response.choices[0]?.message?.content || "{}";
-    const parsed = safeParseJson(content);
-
+    const parsed = await requestGeminiAnalysis(issue);
     return normalizeResult(parsed, issue);
   } catch (error) {
     console.warn("AI processing failed, falling back to local parser:", error.message);

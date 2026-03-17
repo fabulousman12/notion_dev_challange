@@ -66,7 +66,7 @@ export async function handleGithubWebhook(req, res, next) {
       notion: notionPage,
       status: notionPage.mode === "live" ? "synced" : "mocked",
       agent: {
-        provider: process.env.OPENAI_API_KEY ? "openai" : "fallback",
+        provider: process.env.GEMINI_API_KEY ? "gemini" : "fallback",
         mcpServer: process.env.NOTION_MCP_SERVER_URL || "https://mcp.notion.com/mcp"
       }
     });
