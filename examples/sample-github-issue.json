@@ -1,0 +1,14 @@
+{
+  "action": "opened",
+  "issue": {
+    "id": 998877,
+    "number": 73,
+    "title": "Bug: login fails when refresh token expires",
+    "body": "When the refresh token expires, the app gets stuck on a loading state instead of redirecting or refreshing correctly.",
+    "html_url": "https://github.com/example/repo/issues/73"
+  },
+  "repository": {
+    "full_name": "example/repo"
+  }
+}
+
