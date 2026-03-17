@@ -125,25 +125,25 @@ function buildResolvedSchema(properties) {
     titleProperty: titleProperty?.name || "Name",
     priorityProperty:
       findByName(properties, "Priority")?.name ||
-      findByKeywords(properties, ["priority"], ["select", "status", "rich_text", "text"] )?.name ||
+      findByKeywords(properties, ["priority"], ["select", "status", "rich_text", "text"])?.name ||
       REQUIRED_NOTION_PROPERTIES.priority.name,
     statusProperty:
       findByName(properties, "Status")?.name ||
-      findByKeywords(properties, ["status", "state"], ["select", "status", "rich_text", "text"] )?.name ||
+      findByKeywords(properties, ["status", "state"], ["select", "status", "rich_text", "text"])?.name ||
       REQUIRED_NOTION_PROPERTIES.status.name,
     subtasksProperty:
       findByName(properties, "Subtasks")?.name ||
-      findByKeywords(properties, ["subtask", "tasks", "notes"], ["rich_text", "text"] )?.name ||
+      findByKeywords(properties, ["subtask", "tasks", "notes"], ["rich_text", "text"])?.name ||
       REQUIRED_NOTION_PROPERTIES.subtasks.name,
     sourceProperty:
       findByName(properties, "Source")?.name ||
-      findByKeywords(properties, ["source", "url", "link", "github"], ["url", "rich_text", "text"] )?.name ||
+      findByKeywords(properties, ["source", "url", "link", "github"], ["url", "rich_text", "text"])?.name ||
       REQUIRED_NOTION_PROPERTIES.source.name,
     availableProperties: properties
   };
 }
 
-function buildMissingStatements(schema, properties) {
+function buildMissingStatements(properties) {
   const statements = [];
   const propertyNames = new Set(properties.map((property) => property.name.toLowerCase()));
 
@@ -154,7 +154,7 @@ function buildMissingStatements(schema, properties) {
   });
 
   if (!findByType(properties, "title")) {
-    throw new Error("Notion data source is missing a title property and cannot be used");
+    throw new Error("Notion target could not be resolved to a usable data source with a title property");
   }
 
   return statements;
@@ -174,46 +174,121 @@ async function callOptionalTool(client, toolName, args) {
   });
 }
 
-export async function inspectNotionSchema(client, targetId) {
-  const result = await callOptionalTool(client, "notion-fetch", { id: targetId });
+function extractCollectionIds(text) {
+  return Array.from(text.matchAll(/collection:\/\/([0-9a-f-]{32,36})/gi)).map((match) => match[1]);
+}
 
-  if (!result) {
-    return {
-      properties: [],
-      resolved: buildResolvedSchema([]),
-      rawText: ""
-    };
+function normalizeId(id) {
+  return String(id || "").trim();
+}
+
+function stripCollectionPrefix(id) {
+  return normalizeId(id).replace(/^collection:\/\//i, "");
+}
+
+function buildTargetVariants(targetId, text) {
+  const normalized = normalizeId(targetId);
+  const variants = [];
+  const seen = new Set();
+
+  function add(value, kind) {
+    const id = normalizeId(value);
+
+    if (!id || seen.has(id)) {
+      return;
+    }
+
+    seen.add(id);
+    variants.push({
+      raw: id,
+      fetchId: kind === "data_source_id" && !/^collection:\/\//i.test(id) ? `collection://${id}` : id,
+      id: stripCollectionPrefix(id),
+      kind
+    });
   }
 
-  const structuredProperties = uniqueProperties(collectPropertyObjects(result.structuredContent));
-  const text = extractTextBlocks(result);
-  const textProperties = parsePropertiesFromText(text);
+  add(normalized, "database_id");
+  add(`collection://${stripCollectionPrefix(normalized)}`, "data_source_id");
+  extractCollectionIds(text || "").forEach((id) => add(id, "data_source_id"));
+
+  return variants;
+}
+
+async function fetchTargetSnapshot(client, id) {
+  const result = await callOptionalTool(client, "notion-fetch", { id });
+  return {
+    result,
+    text: result ? extractTextBlocks(result) : ""
+  };
+}
+
+function buildInspectionFromSnapshot(snapshot, target) {
+  const structuredProperties = snapshot.result
+    ? uniqueProperties(collectPropertyObjects(snapshot.result.structuredContent))
+    : [];
+  const textProperties = parsePropertiesFromText(snapshot.text);
   const properties = uniqueProperties([...structuredProperties, ...textProperties]);
 
   return {
     properties,
     resolved: buildResolvedSchema(properties),
-    rawText: text
+    rawText: snapshot.text,
+    target
   };
 }
 
-export async function ensureNotionSchema(client, targetId) {
-  let inspection = await inspectNotionSchema(client, targetId);
-  const statements = buildMissingStatements(inspection.resolved, inspection.properties);
+export async function resolveNotionTarget(client, targetId) {
+  const initial = await fetchTargetSnapshot(client, targetId);
+  const variants = buildTargetVariants(targetId, initial.text);
+  let fallbackInspection = null;
 
-  if (statements.length > 0) {
+  for (const variant of variants) {
+    const snapshot = variant.fetchId === normalizeId(targetId) ? initial : await fetchTargetSnapshot(client, variant.fetchId);
+    const inspection = buildInspectionFromSnapshot(snapshot, variant);
+
+    if (!fallbackInspection) {
+      fallbackInspection = inspection;
+    }
+
+    if (findByType(inspection.properties, "title")) {
+      return inspection;
+    }
+  }
+
+  return fallbackInspection || {
+    properties: [],
+    resolved: buildResolvedSchema([]),
+    rawText: "",
+    target: {
+      raw: targetId,
+      fetchId: targetId,
+      id: stripCollectionPrefix(targetId),
+      kind: "database_id"
+    }
+  };
+}
+
+export async function inspectNotionSchema(client, targetId) {
+  return resolveNotionTarget(client, targetId);
+}
+
+export async function ensureNotionSchema(client, targetId) {
+  let inspection = await resolveNotionTarget(client, targetId);
+  const statements = buildMissingStatements(inspection.properties);
+
+  if (statements.length > 0 && inspection.target.kind === "data_source_id") {
     const updateResult = await callOptionalTool(client, "notion-update-data-source", {
-      data_source_id: targetId,
+      data_source_id: inspection.target.id,
       statements: statements.join("; ")
     });
 
     if (updateResult) {
-      inspection = await inspectNotionSchema(client, targetId);
+      inspection = await resolveNotionTarget(client, inspection.target.id);
     }
   }
 
   return {
     ...inspection,
-    expectedProperties: Object.values(REQUIRED_NOTION_PROPERTIES).map((definition) => definition.name)
+    expectedProperties: ["Title", ...Object.values(REQUIRED_NOTION_PROPERTIES).map((definition) => definition.name)]
   };
 }

@@ -15,9 +15,15 @@ function buildPageContent(task, issue) {
   ].join("\n");
 }
 
-function buildParentObject(user) {
+function buildParentObject(schema) {
+  if (schema.target.kind === "data_source_id") {
+    return {
+      data_source_id: schema.target.id
+    };
+  }
+
   return {
-    database_id: user.notion.targetId
+    database_id: schema.target.id
   };
 }
 
@@ -34,12 +40,12 @@ function buildPagePayload(task, issue, resolvedSchema) {
   };
 }
 
-function buildCreateToolArguments(tool, pagePayload, user) {
+function buildCreateToolArguments(tool, pagePayload, schema) {
   const properties = tool?.inputSchema?.properties || {};
   const args = {};
 
   if (properties.parent) {
-    args.parent = buildParentObject(user);
+    args.parent = buildParentObject(schema);
   }
 
   if (properties.pages) {
@@ -172,7 +178,7 @@ export async function createNotionTask(user, task, issue) {
     const pagePayload = buildPagePayload(task, issue, schema.resolved);
     const result = await client.callTool({
       name: createTool.name,
-      arguments: buildCreateToolArguments(createTool, pagePayload, user)
+      arguments: buildCreateToolArguments(createTool, pagePayload, schema)
     });
 
     return parseCreatePageResult(result);
