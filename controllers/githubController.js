@@ -7,6 +7,10 @@ import { verifyGithubSignature } from "../utils/githubSignature.js";
 
 const supportedActions = new Set(["opened", "edited", "reopened"]);
 
+function getUserId(user) {
+  return String(user?.id || user?._id || "");
+}
+
 export async function handleGithubWebhook(req, res, next) {
   try {
     const event = req.headers["x-github-event"];
@@ -45,11 +49,17 @@ export async function handleGithubWebhook(req, res, next) {
       repository: repository?.full_name || "unknown/repository"
     };
 
+    const userId = getUserId(user);
+
+    if (!userId) {
+      return res.status(500).json({ message: "Unable to resolve user for workflow persistence" });
+    }
+
     const aiResult = await analyzeIssue(issuePayload);
     const notionPage = await createNotionTask(user, aiResult, issuePayload);
 
     const workflow = await addWorkflow({
-      userId: user.id,
+      userId,
       user: sanitizeUser(user),
       issue: issuePayload,
       task: aiResult,
