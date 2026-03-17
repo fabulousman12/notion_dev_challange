@@ -1,4 +1,5 @@
 import { withNotionClient } from "./notionMcpClient.js";
+import { ensureNotionSchema } from "./notionSchemaService.js";
 
 function buildPageContent(task, issue) {
   const subtaskLines = task.subtasks.map((subtask) => `- ${subtask}`).join("\n");
@@ -20,14 +21,14 @@ function buildParentObject(user) {
   };
 }
 
-function buildPagePayload(task, issue, user) {
+function buildPagePayload(task, issue, resolvedSchema) {
   return {
     properties: {
-      [user.notion.titleProperty]: task.task,
-      [user.notion.priorityProperty]: task.priority,
-      [user.notion.statusProperty]: user.notion.statusValue,
-      [user.notion.subtasksProperty]: task.subtasks.join(" | "),
-      [user.notion.sourceProperty]: issue.url
+      [resolvedSchema.titleProperty]: task.task,
+      [resolvedSchema.priorityProperty]: task.priority,
+      [resolvedSchema.statusProperty]: "Open",
+      [resolvedSchema.subtasksProperty]: task.subtasks.join(" | "),
+      [resolvedSchema.sourceProperty]: issue.url
     },
     content: buildPageContent(task, issue)
   };
@@ -103,17 +104,40 @@ function normalizeNotionUrl(url, id) {
   return "";
 }
 
-function parseCreatePageResult(result) {
-  const text = extractTextBlocks(result);
+function parseEmbeddedError(text) {
+  if (!text) {
+    return null;
+  }
 
   if (/^MCP error/i.test(text)) {
-    throw new Error(text);
+    return text;
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    const body = typeof parsed.body === "string" ? JSON.parse(parsed.body) : parsed.body;
+    return body?.message || parsed.message || null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCreatePageResult(result) {
+  const text = extractTextBlocks(result);
+  const embeddedError = parseEmbeddedError(text);
+
+  if (embeddedError) {
+    throw new Error(embeddedError);
   }
 
   const structured = extractFromStructuredContent(result.structuredContent);
   const urlMatch = text.match(/https?:\/\/[^\s]+/);
   const pageId = structured?.id || `mcp-${Date.now()}`;
   const pageUrl = normalizeNotionUrl(structured?.url || urlMatch?.[0] || "", pageId);
+
+  if (!pageUrl) {
+    throw new Error("Notion MCP did not return a page URL");
+  }
 
   return {
     id: pageId,
@@ -144,7 +168,8 @@ export async function createNotionTask(user, task, issue) {
       throw new Error("The connected Notion MCP server did not expose notion-create-pages");
     }
 
-    const pagePayload = buildPagePayload(task, issue, user);
+    const schema = await ensureNotionSchema(client, user.notion.targetId);
+    const pagePayload = buildPagePayload(task, issue, schema.resolved);
     const result = await client.callTool({
       name: createTool.name,
       arguments: buildCreateToolArguments(createTool, pagePayload, user)

@@ -4,6 +4,8 @@ import {
   disconnectNotion,
   getNotionConnectionStatus
 } from "../services/notionAuthService.js";
+import { withNotionClient } from "../services/notionMcpClient.js";
+import { ensureNotionSchema } from "../services/notionSchemaService.js";
 
 export async function startNotionConnection(req, res, next) {
   try {
@@ -40,6 +42,28 @@ export async function handleNotionCallback(req, res) {
 export async function getNotionStatus(req, res, next) {
   try {
     const status = await getNotionConnectionStatus(req.userId);
+
+    if (status.connected && status.notionTarget?.targetId) {
+      try {
+        const schema = await withNotionClient(req.userId, async (client) =>
+          ensureNotionSchema(client, status.notionTarget.targetId)
+        );
+
+        status.schema = {
+          properties: schema.properties,
+          resolved: schema.resolved,
+          expectedProperties: schema.expectedProperties
+        };
+      } catch (schemaError) {
+        status.schema = {
+          error: schemaError.message,
+          properties: [],
+          resolved: null,
+          expectedProperties: ["Title", "Priority", "Status", "Subtasks", "Source"]
+        };
+      }
+    }
+
     return res.json(status);
   } catch (error) {
     return next(error);
