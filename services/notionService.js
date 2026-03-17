@@ -14,6 +14,12 @@ function buildPageContent(task, issue) {
   ].join("\n");
 }
 
+function buildParentObject(user) {
+  return {
+    database_id: user.notion.targetId
+  };
+}
+
 function buildPagePayload(task, issue, user) {
   return {
     properties: {
@@ -32,7 +38,7 @@ function buildCreateToolArguments(tool, pagePayload, user) {
   const args = {};
 
   if (properties.parent) {
-    args.parent = user.notion.targetId;
+    args.parent = buildParentObject(user);
   }
 
   if (properties.pages) {
